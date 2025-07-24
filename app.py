@@ -525,6 +525,8 @@ if uploaded and not any(incomplete_depot(w) for w in warehouses):
             beat_list = sorted(final_all[final_all.warehouse_id == wh_choice].beat_id.unique())
             beat_choice = st.selectbox("Select Beat", beat_list, key="beat_view")
 
+
+#edited
             sub_final = final_all[(final_all.warehouse_id == wh_choice) & (final_all.beat_id == beat_choice)]
             depot_pt = warehouses[wh_choice-1]['depot']
             map_obj = build_map_for_beat(sub_final, depot_pt, beat_choice)
