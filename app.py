@@ -8,7 +8,7 @@ import folium
 from streamlit_folium import st_folium
 import time
 
-#manual and auto both.... final
+#manual and auto both.... final till now
 #latest-updated
 #multi warehouses -  0,0 handled
 #final
@@ -352,25 +352,41 @@ if uploaded and not any(incomplete_depot(w) for w in warehouses):
                 
                 #extra
                 
-                all_vehicles = [(v, 'Car')  for v in wh['cars']] \
-                            + [(v, 'Bike') for v in wh['bikes']]
-                max_salesmen  = st.session_state[f"salesmen_{wid-1}"]
-                vehicles_to_run = all_vehicles[:max_salesmen]
-                
+                # ◉◉◉ NEW: Pre‑run capacity check ◉◉◉
+                total_demand  = beat_stats['total_sales'].sum()
+                # build list of all vehicles in this warehouse
+                all_vehicles  = [(v,'Car') for v in wh['cars']] + [(v,'Bike') for v in wh['bikes']]
+                total_capacity = sum(v['capacity'] for v,_ in all_vehicles)
+                if total_capacity < total_demand:
+                    st.warning(
+                        f"⚠️ Total demand ({total_demand}) exceeds fleet capacity "
+                        f"({total_capacity}). Consider adding vehicles or reducing beats."
+                    )
+
+                # ◉◉◉ NEW: Sort vehicles by load‑power (capacity/beat_cover) ◉◉◉
+                all_vehicles.sort(
+                    key=lambda pair: pair[0]['capacity'] / pair[0]['beat_cover'],
+                    reverse=True
+                )
+
+                # # ◉◉◉ NEW: Show KPI metrics ◉◉◉
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Beats",      beat_stats.shape[0])
+                c2.metric("Fleet Cap.", total_capacity)
+                c3.metric("Demand / Supply", f"{total_demand/total_capacity:.0%}")
+
                 # 3) Start with all beats unassigned
                 remaining_beats = set(beat_stats['beat_id'])
-                assignments = []
-                combined_warnings = []
+                assignments     = []
+                combined_warnings        = []
 
-                # 4) For each vehicle (cars first, then bikes)…
-                
-                for veh, label in vehicles_to_run:
-                    # find k & sales exactly like before
+                # 4) For each vehicle…
+                for veh, label in all_vehicles[: st.session_state[f"salesmen_{wid-1}"]]:
                     k = veh['beat_cover']
                     pool = beat_stats[beat_stats.beat_id.isin(remaining_beats)].reset_index(drop=True)
-                    chosen_beats = find_nearest_beats(
-                        pool[['beat_id','latitude','longitude']], k
-                    )
+
+                    # (unchanged) find your k geographically tightest beats
+                    chosen_beats = find_nearest_beats(pool[['beat_id','latitude','longitude']], k)
                     sales_assigned = int(pool[pool.beat_id.isin(chosen_beats)]['total_sales'].sum())
                     fulfilled = (sales_assigned <= veh['capacity'])
 
@@ -387,9 +403,11 @@ if uploaded and not any(incomplete_depot(w) for w in warehouses):
                         remaining_beats -= set(chosen_beats)
                     else:
                         combined_warnings.append(
-                            f"• **{veh['name']}** ({label}) is overloaded: "
-                            f"{sales_assigned} > {veh['capacity']}.  "
-                            "Their beats remain unassigned."
+                            f"• **{veh['name']}** is overloaded: "
+                    f"{sales_assigned} > {veh['capacity']}."
+                            # f"• **{veh['name']}** ({label}) is overloaded: "
+                            # f"{sales_assigned} > {veh['capacity']}.  "
+                            # "Their beats remain unassigned."
                         )
                         
                 # 5) Display the assignment table
@@ -525,8 +543,6 @@ if uploaded and not any(incomplete_depot(w) for w in warehouses):
             beat_list = sorted(final_all[final_all.warehouse_id == wh_choice].beat_id.unique())
             beat_choice = st.selectbox("Select Beat", beat_list, key="beat_view")
 
-
-#edited
             sub_final = final_all[(final_all.warehouse_id == wh_choice) & (final_all.beat_id == beat_choice)]
             depot_pt = warehouses[wh_choice-1]['depot']
             map_obj = build_map_for_beat(sub_final, depot_pt, beat_choice)
