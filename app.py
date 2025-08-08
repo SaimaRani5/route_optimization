@@ -12,6 +12,9 @@ import json
 import hashlib
 import pickle
 import os
+from dotenv import load_dotenv
+import os
+
 
 # --------- JSON serialization helper ---------
 def convert_np(o):
@@ -35,8 +38,11 @@ st.title("🚚 Smart Beat/Route Optimizer (Multi-Warehouse, Real Road Routing, C
 
 # 0. API Keys
 st.sidebar.header("🔑 API Keys (Required)")
-ORS_API_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjZiOTQzYjM2YzBkMDQ2NmQ4ZmE4ZGQ5ODI5MTAwZWE5IiwiaCI6Im11cm11cjY0In0="
-MAPBOX_TOKEN = "pk.eyJ1Ijoic2FpbWFyYW5pIiwiYSI6ImNtZHpxNGRsbDA3MnEyaXNicGgyeTVocjAifQ.Is217ZkO0dJuAGqpPFr9PQ"
+
+load_dotenv()
+ORS_API_KEY = os.getenv("ORS_API_KEY")
+MAPBOX_TOKEN = os.getenv("MAPBOX_API_KEY")
+
 if not ORS_API_KEY or not MAPBOX_TOKEN:
     st.warning("Please enter both ORS and Mapbox API keys in the sidebar.")
     st.stop()
