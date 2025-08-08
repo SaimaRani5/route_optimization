@@ -12,9 +12,6 @@ import json
 import hashlib
 import pickle
 import os
-from dotenv import load_dotenv
-import os
-
 
 # --------- JSON serialization helper ---------
 def convert_np(o):
@@ -37,12 +34,9 @@ st.set_page_config(page_title="Smart VRP/Beat Optimizer", layout="wide")
 st.title("🚚 Smart Beat/Route Optimizer (Multi-Warehouse, Real Road Routing, Cached)")
 
 # 0. API Keys
-st.sidebar.header("🔑 API Keys (Required)")
 
-load_dotenv()
-ORS_API_KEY = os.getenv("ORS_API_KEY")
-MAPBOX_TOKEN = os.getenv("MAPBOX_API_KEY")
-
+ORS_API_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjZiOTQzYjM2YzBkMDQ2NmQ4ZmE4ZGQ5ODI5MTAwZWE5IiwiaCI6Im11cm11cjY0In0="
+MAPBOX_TOKEN = "pk.eyJ1Ijoic2FpbWFyYW5pIiwiYSI6ImNtZHpxNGRsbDA3MnEyaXNicGgyeTVocjAifQ.Is217ZkO0dJuAGqpPFr9PQ"
 if not ORS_API_KEY or not MAPBOX_TOKEN:
     st.warning("Please enter both ORS and Mapbox API keys in the sidebar.")
     st.stop()
@@ -91,17 +85,45 @@ for i in range(int(num_wh)):
                 lat, lon = None, None
                 st.info("Click on the map to select a depot location.")
 
-        max_capacity = st.number_input(f"Vehicle Capacity for Warehouse {i+1}", value=270., key=f"capacity_{i}")
+        with st.expander("🚗 Vehicle Settings: ", expanded=True):
+            vehicle_types = ['Bike', 'Car']
+            num_vehicles = {}
+            vehicle_caps = {}
+            beats_per_vehicle = {}
+
+            st.write("### Configure Vehicles Per Warehouse")
+            for vt in vehicle_types:
+                cols = st.columns([2, 2, 2])
+                with cols[0]:
+                    count = st.number_input(f"Number of {vt}s", min_value=0, value=1 if vt == 'Bike' else 0, key=f"{vt}_count_{i}")
+                with cols[1]:
+                    cap = st.number_input(f"{vt} Capacity", min_value=1, value=60 if vt == 'Bike' else 270, key=f"{vt}_cap_{i}")
+                with cols[2]:
+                    beats_str = st.text_input(f"Beats assigned per {vt}", value="1" if count else "(separated by comma)", key=f"{vt}_beats_{i}")
+                num_vehicles[vt.lower()] = int(count)
+                vehicle_caps[vt.lower()] = int(cap)
+                if beats_str:
+                    beats_list = [int(b.strip()) for b in beats_str.split(",") if b.strip().isdigit()]
+                else:
+                    beats_list = []
+                beats_per_vehicle[vt.lower()] = beats_list
+
+            # Now, use num_vehicles, vehicle_caps, and beats_per_vehicle in your warehouse_settings
+
         max_shops_per_beat = st.number_input(f"Max Shops per Beat for Warehouse {i+1}", min_value=1, value=50, key=f"shops_{i}")
 
         warehouse_settings.append({
             "warehouse_num": i+1,
             "lat": lat,
             "lon": lon,
-            "capacity": max_capacity,
+            "vehicle_config": {
+                vt.lower(): {"count": num_vehicles[vt.lower()], "capacity": vehicle_caps[vt.lower()]}
+                for vt in vehicle_types
+            },
+            "beat_assignments": beats_per_vehicle,
             "max_shops_per_beat": max_shops_per_beat
         })
-
+# st.write("DEBUG VEHICLE CONFIG:", warehouse_settings)
 # st.write("Warehouse settings debug:", warehouse_settings)
 
 # --------- CACHING SETUP ---------
@@ -109,9 +131,10 @@ CACHE_DIR = "cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 config_key_items = []
 for wh in warehouse_settings:
-    config_key_items.extend([wh['lat'], wh['lon'], wh['capacity'], wh['max_shops_per_beat']])
-config_key_items.append(len(warehouse_settings))  # number of warehouses!
-
+    config_key_items.extend([wh['lat'], wh['lon'], wh['max_shops_per_beat']])
+    for vt, vconf in wh.get('vehicle_config', {}).items():
+        config_key_items.extend([vt, vconf.get('count', 0), vconf.get('capacity', 0)])
+config_key_items.append(len(warehouse_settings))
 shops_assign_cache = os.path.join(
     CACHE_DIR, f"shop_assignment_{file_hash(file_bytes)}_{config_hash(*config_key_items)}.pkl"
 )
@@ -152,7 +175,9 @@ for i, wh in enumerate(warehouse_settings):
         continue
 
     depot = (wh['lat'], wh['lon'])
-    max_capacity = wh['capacity']
+    vehicle_config = wh.get('vehicle_config', {})
+    max_capacity = max([v.get('capacity', 0) for v in vehicle_config.values()] or [0])
+
     max_shops_per_beat = wh['max_shops_per_beat']
 
     # --- More robust beat/route cache key ---
@@ -306,14 +331,47 @@ for i, wh in enumerate(warehouse_settings):
 
         all_beats.append(beats)
         all_beat_orders.append(beat_orders)
-        
+    
+    # Assign beats to vehicles according to user input and capacity
+    assigned_vehicles = []   # List of (beat_index, vehicle_type, vehicle_num)
+    unassigned_beats = set(range(len(beats)))
+
+    for vt, assign_list in wh.get("beat_assignments", {}).items():
+        vehicle_cap = wh["vehicle_config"].get(vt, {}).get("capacity", None)
+        if vehicle_cap is None:
+            st.warning(f"Please set vehicle capacity for {vt.capitalize()} in Warehouse {i+1}.")
+            continue
+        # Filter beats that can be handled by this vehicle type
+        valid_beats = [idx for idx in unassigned_beats if sum(shops.iloc[j]['sales'] for j in beats[idx]) <= vehicle_cap]
+        b = 0
+        for vnum, num_beats in enumerate(assign_list, 1):
+            for _ in range(num_beats):
+                if b >= len(valid_beats): break
+                beat_idx = valid_beats[b]
+                assigned_vehicles.append((beat_idx, vt, vnum))
+                unassigned_beats.remove(beat_idx)
+                b += 1
+
+    # For UI display: which beat goes to which vehicle (or unassigned)
+    beat_vehicle_map = ["Unassigned"] * len(beats)
+    for beat_idx, vt, vnum in assigned_vehicles:
+        beat_vehicle_map[beat_idx] = f"{vt.capitalize()} {vnum}"
+
+    # Add warning if any beats remain unassigned
+    if len(unassigned_beats) > 0:
+        st.warning(f"Warehouse {i+1}: {len(unassigned_beats)} beats are unassigned! Increase vehicle count or adjust assignment.")
+
+    # You can add 'beat_vehicle_map' to your warehouse_beat_info for later visualization!
+
+   
     warehouse_beat_info.append({
         "depot": depot,
         "beats": beats,
         "beat_orders": beat_orders,
         "shops": shops,
         "beat_polylines": beat_polylines,
-        "beat_shop_markers": beat_shop_markers
+        "beat_shop_markers": beat_shop_markers,
+        "beat_vehicle_map": beat_vehicle_map   # <-- NEW
     })
 
 st.success(f"✅ Beats and road routes (cached) for all warehouses!")
@@ -328,8 +386,42 @@ if not warehouse_beat_info:
     st.error("No beats/routes were generated for any warehouse! Please check your uploaded shop data, warehouse locations, and constraints. Make sure every warehouse has at least one shop assigned and that depot locations are set.")
     st.stop()
     
+
+
 st.header("4️⃣ Visualize All Optimized Beats & Routes (Real Road Paths)")
 
+for idx, wh in enumerate(warehouse_beat_info):
+    st.subheader(f"Warehouse {idx+1}")
+    beats = wh["beats"]
+    shops = wh["shops"]
+    beat_vehicle_map = wh["beat_vehicle_map"]
+    vehicle_config = warehouse_settings[idx]['vehicle_config']
+
+    # Prepare table data
+    beat_summary = []
+    for beat_num, beat in enumerate(beats, 1):
+        max_shops = len(beat)
+        total_sales = sum(shops.iloc[j]['sales'] for j in beat)
+        assigned_vehicle = beat_vehicle_map[beat_num - 1]
+        if assigned_vehicle == "Unassigned":
+            vehicle_type = "-"
+            vehicle_cap = "-"
+        else:
+            vt, vnum = assigned_vehicle.split()
+            vt = vt.lower()
+            vehicle_cap = vehicle_config.get(vt, {}).get("capacity", "-")
+            vehicle_type = assigned_vehicle
+        beat_summary.append({
+            "Beat Number": beat_num,
+            "Max Shops in Beat": max_shops,
+            "Total Sales in Beat": total_sales,
+            "Assigned Vehicle": vehicle_type,
+            "Vehicle Carrying Capacity": vehicle_cap
+        })
+
+    beat_df = pd.DataFrame(beat_summary)
+    st.dataframe(beat_df, hide_index=True)
+    
 # 1. Select warehouse
 warehouse_options = [f"Warehouse {i+1}" for i in range(len(warehouse_beat_info))]
 selected_wh_idx = st.selectbox("Select Warehouse", options=range(len(warehouse_beat_info)), format_func=lambda x: warehouse_options[x])
@@ -337,12 +429,16 @@ selected_wh_idx = st.selectbox("Select Warehouse", options=range(len(warehouse_b
 selected_wh = warehouse_beat_info[selected_wh_idx]
 beat_polylines = selected_wh["beat_polylines"]
 beat_shop_markers = selected_wh["beat_shop_markers"]
+beat_vehicle_map = selected_wh["beat_vehicle_map"]
 depot = selected_wh["depot"]
 
 if not warehouse_beat_info:
     st.error("No warehouses with beats found! Please make sure you uploaded valid shop data, set ALL warehouse depot locations, and assigned shops to warehouses.")
     st.stop()
-    
+
+
+
+
 # 2. Checkboxes for beats of selected warehouse
 st.subheader(f"👁️ Select Beats to Display for {warehouse_options[selected_wh_idx]}")
 checked_indices = []
@@ -356,6 +452,12 @@ if not checked_indices:
 
 filtered_beat_polylines = [beat_polylines[i] for i in checked_indices]
 filtered_beat_shop_markers = [beat_shop_markers[i] for i in checked_indices]
+
+# >>> ADD THIS BLOCK HERE <<<
+for filtered_idx, shops_in_beat in zip(checked_indices, filtered_beat_shop_markers):
+    for shop_marker in shops_in_beat:
+        shop_marker['assigned_vehicle'] = beat_vehicle_map[filtered_idx]
+
 shop_markers_json = json.dumps(filtered_beat_shop_markers, default=convert_np)
 polylines_json = json.dumps(filtered_beat_polylines, default=convert_np)
 
@@ -364,9 +466,8 @@ depot_marker = {
     "lng": depot[1],
     "title": f"Depot ({warehouse_options[selected_wh_idx]})"
 }
-depot_json = json.dumps(depot_marker, default=convert_np)
 
-# ... rest of your mapbox visualization code
+
 html_code = f"""
 <div id="map" style="height:700px;width:100%;"></div>
 <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
@@ -435,7 +536,9 @@ html_code = f"""
                         <b>Shop:</b> ${{shop.shop_id}}<br>
                         <b>Shop Order in Beat:</b> ${{shop.order}}<br>
                         <b>Total Shops in Beat:</b> ${{shop.total_shops}}<br>
-                        <b>Sales:</b> ${{shop.sales}}`
+                        <b>Sales:</b> ${{shop.sales}}<br>
+                        <b>Assigned Vehicle:</b> ${{shop.assigned_vehicle}}`
+
                     )
                 )
                 .addTo(map);
@@ -448,7 +551,9 @@ components.html(html_code, height=700, width=1100)
 # Optional: Download beat assignments
 output_data = []
 for wh_idx, wh in enumerate(warehouse_beat_info, 1):
+    beat_vehicle_map = wh['beat_vehicle_map']
     for beat_num, (beat, shop_order) in enumerate(zip(wh["beats"], wh["beat_orders"]), 1):
+        assigned_vehicle = beat_vehicle_map[beat_num - 1] if beat_num-1 < len(beat_vehicle_map) else ""
         for order, shop_idx in enumerate(shop_order, 1):
             shop = wh["shops"].iloc[shop_idx]
             output_data.append({
@@ -459,9 +564,10 @@ for wh_idx, wh in enumerate(warehouse_beat_info, 1):
                 "Latitude": shop['latitude'],
                 "Longitude": shop['longitude'],
                 "Sales": shop['sales'],
+                "Assigned Vehicle": assigned_vehicle,
             })
+
 out_df = pd.DataFrame(output_data)
 st.download_button("Download Optimized Beat Assignments", out_df.to_csv(index=False), file_name="optimized_beats.csv")
-
 
 
