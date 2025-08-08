@@ -99,7 +99,7 @@ for i in range(int(num_wh)):
                 with cols[1]:
                     cap = st.number_input(f"{vt} Capacity", min_value=1, value=60 if vt == 'Bike' else 270, key=f"{vt}_cap_{i}")
                 with cols[2]:
-                    beats_str = st.text_input(f"Beats assigned per {vt}", value="1" if count else "(separated by comma)", key=f"{vt}_beats_{i}")
+                    beats_str = st.text_input(f"Beats assigned per {vt} separated by comma", value="1" if count else "", key=f"{vt}_beats_{i}")
                 num_vehicles[vt.lower()] = int(count)
                 vehicle_caps[vt.lower()] = int(cap)
                 if beats_str:
